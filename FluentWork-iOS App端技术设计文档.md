@@ -1,6 +1,6 @@
 # FluentWork iOS App 端技术设计文档
 
-**版本**：V1.0　**日期**：2026年8月　**对应**：技术方案 V3.1 第六章 / UI 设计文档 V1.1 / 团队分工文档 V1.0　**定位**：客户端实现详设
+**版本**：V1.1　**日期**：2026年8月　**对应**：技术方案 V3.2 第六章 / UI 设计文档 V1.1 / 团队分工文档 V1.0　**定位**：客户端实现详设
 
 > 本文档是技术方案第六章（架构与选型层）与 UI 文档（交互层）之间的**模块内部设计层**，同时是 iOS 编程 Agent 的直接任务上下文。分工基线（已定案）：AudioEngine 与 SpeechSession 状态机由负责人手写，其余模块由 Agent 起草 + 负责人评审。本文档对两类代码一视同仁地定义接口契约——人写模块的接口冻结后，Agent 代码只依赖接口，不依赖实现细节。
 
@@ -79,6 +79,7 @@ idle ─► connecting ─► aiSpeaking ⇄ waitingUser ⇄ recording
 | `badgeHit` | Transport（feedback.badge） | **不进状态机**，旁路直达 Store（不阻塞任何状态流转） |
 | `networkLost` | Transport | 任意 → 3 秒重连窗口；超时 → degradedText |
 | `interruptedBySystem` | 系统（来电） | 挂起当前状态，恢复后回 waitingUser |
+| `textMessageSent` / `textReplyReceived` | UI / APIClient | 仅 degradedText 内部循环（文本降级走 `POST /sessions/:id/messages`，见后端契约） |
 | `endTap` | UI | 底部条确认（UI 文档 4.2）→ ended，触发 session.end |
 
 ### 2.3 实现与测试要求
@@ -173,7 +174,7 @@ AudioEngine 对外只暴露协议 `AudioEngineProtocol`（start/stop/playChunk/i
 | 集成项 | 要点 |
 |---|---|
 | 麦克风权限 | 首次进入说的房间前申请；拒绝走非阻断说明条；三类用声场景共用结果 |
-| 推送 | 闪测复习 / 每日一读 / 话题建议三类独立开关（对应设置页）；回顾生成完成走**静默推送**触发刷新，不发可见通知 |
+| 推送 | 闪测复习 / 每日一读 / 话题建议三类独立开关（对应设置页）；回顾生成完成走**静默推送**触发刷新——**静默推送只做加速**：APNs 对 content-available 有节流，客户端进入工作台/回顾页时对未就绪的 review 必须主动拉取兜底（与后端 5.2 对齐） |
 | 深色主题 | 深色默认（UI 文档 2.1），跟随系统仅作反转；色值全部进 Design Tokens 常量，禁止页面内硬编码 |
 | 动态字体 | 正文支持至 130%，布局用系统字体度量，不锁死行高像素值 |
 | 无障碍 | VoiceOver 标签与徽章公告按 UI 文档第七章；所有纯视觉元素（波形/状态灯/徽章）必须有 accessibilityLabel |
@@ -199,7 +200,7 @@ AudioEngine 对外只暴露协议 `AudioEngineProtocol`（start/stop/playChunk/i
 | 任务单 | 内容 | 周次 | 依赖 | 验收要点 |
 |---|---|---|---|---|
 | C1 | SocketTransport + 帧编解码 + 序列号丢帧 | W3 | 后端 WSS schema | 契约测试通过；丢帧单测全绿 |
-| C2 | APIClient 全量接口 + 票据流程 | W3 | 后端 REST 契约 | 错误归一化单测 |
+| C2 | APIClient 全量接口 + 票据流程 + 游客身份与归并（后端 G4） + 文本降级 messages 接口 | W3 | 后端 REST 契约 | 错误归一化单测；归并幂等用例 |
 | C3 | 说的房间 UI（气泡流/说话键/浮层/徽章/素材栏） | W3-W4 | 状态机接口冻结 | 快照测试 + 状态机驱动的全状态走查 |
 | C4 | 创建练习弹层 + 工作台 | W4 | C2 | UI 文档 4.1 还原；一句话默认 Tab |
 | C5 | 回顾页（渐进加载 + 双栏对照 + 炼化卡） | W5 | C2 | 两层到达时序单测（骨架→内容） |

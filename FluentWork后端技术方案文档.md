@@ -1,6 +1,6 @@
 # FluentWork 后端技术方案设计文档
 
-**版本**：V1.1　**日期**：2026年8月　**对应**：PRD V1.3 / 技术方案 V3.1 / Prompt 工程与语料库设计文档 V1.1　**评审角色**：后端技术负责人
+**版本**：V1.2　**日期**：2026年8月　**对应**：PRD V1.4 / 技术方案 V3.2 / Prompt 工程与语料库设计文档 V1.1　**评审角色**：后端技术负责人
 
 > 本文档覆盖服务端全部设计：技术栈、服务架构、数据库、接口契约、核心链路时序、异步任务管线、订阅计费、稳定性与部署。前端与语音链路细节见技术方案 V3.1，Prompt 与调度算法见专项文档，本文只定义服务端如何承载它们。
 
@@ -67,8 +67,9 @@
 ### 3.1 表清单与关键字段
 
 ```sql
--- 账号
-users(id, email, pwd_hash NULL, status, created_at)
+-- 账号（支持游客身份：演示主路径免注册，见 3.2 设计要点 5）
+users(id, email NULL, phone NULL, device_id NULL, is_guest,
+      pwd_hash NULL, status, created_at)
 auth_tokens(id, user_id, refresh_token_hash, expires_at)
 
 -- 素材
@@ -86,8 +87,10 @@ utterances(id, session_id, seq, speaker, text, asr_confidence,
 phrase_blocks(id, user_id, intent_zh, expression_en, anchor_user_said,
               scene_tag, function_tag, state, success_streak,
               next_due_at, ease_factor, real_use_count,
+              is_favorite, pinned_at NULL,          -- 收藏/置顶（PRD F3）
               source_session_id, deleted_at, created_at, updated_at)
   KEY idx_due(user_id, next_due_at), KEY idx_scene(user_id, scene_tag),
+  KEY idx_fav(user_id, is_favorite, pinned_at),
   FULLTEXT KEY ft_expr(expression_en, intent_zh)
 
 drill_records(id, user_id, block_id, drill_type, semantic_pass,
@@ -116,13 +119,20 @@ sched_configs(id, param_key, param_value, updated_at)   -- 调度参数热更新
 ai_cost_logs(id, user_id, task_type, model, tokens_in, tokens_out,
              audio_sec, cost_fen, created_at)
   KEY idx_user_date(user_id, created_at)
+
+-- 删除回执（3.2 级联删除的每步回执，支撑 72h SLA 与进度可查）
+deletion_receipts(id, task_id, user_id, entity_type, entity_id,
+                  step, status, vendor_cleaned, receipt_json, created_at)
+  KEY idx_task(task_id, step)
 ```
 
 ### 3.2 设计要点
 
 1. **软删除 + 级联任务**：`deleted_at` 软删除先行（误删可恢复 72h 宽限），级联硬删由 MQ 任务执行并写 `deletion_receipts` 回执表——对应 PRD 隐私承诺的工程落地；
 2. **JSON 列的纪律**：只存"读多写少、无需检索"的结构（refine_json、review_json、hit_block_ids）；需要筛选的字段（scene_tag 等）必须是独立列；
-3. **成本埋点独立表**：每次 AI 调用同步落一条 `ai_cost_logs`——这是单位经济模型的数据基础，W1 就上线，不允许后补。
+3. **成本埋点独立表**：每次 AI 调用同步落一条 `ai_cost_logs`——这是单位经济模型的数据基础，W1 就上线，不允许后补；
+4. **锚点字段的隐私边界（V1.2 定案）**：`anchor_user_said` 是从用户话轮提炼的表达片段，**定性为衍生数据而非敏感原始数据**（与素材原文/转录/录音不同级），明文落库并参与 FULLTEXT 检索——若加密则全文检索失效，权衡后不加密；代价是两件事必须做到：素材删除时锚点级联脱敏为"[已删除]"（对齐 PRD F4）；隐私政策中显性告知"练习内容的提炼片段会明文存储"。此口径不允许悬而未决，提审材料引用本条；
+5. **游客身份与数据归并（V1.2 新增，对齐 PRD G4）**：首次用户以设备身份（`device_id`，`is_guest=1`）进入演示闭环，无需注册；业务表（materials/sessions/phrase_blocks）的 `user_id` 允许为游客 ID；用户首次"保存语料"触发注册后，`POST /account/merge` 把游客数据归并到正式账号——实现要点：以 `device_id` 幂等（重复调用不重复归并）、归并后游客记录置为已合并状态（不物理删除，留审计）、话术块的 `next_due_at` 与调度状态原样迁移；**W3 建 session 模块时必须带上，否则演示练习丢在游客态或被迫提前登录破坏主路径**。
 
 ---
 
@@ -134,15 +144,20 @@ ai_cost_logs(id, user_id, task_type, model, tokens_in, tokens_out,
 |---|---|---|
 | 账号 | POST /auth/email-code | 发送邮箱验证码（限流：同邮箱 1/min） |
 | | POST /auth/sms-code | 发送手机短信验证码（国内主通道，限流：同号码 1/min；V1.3 新增） |
+| | POST /auth/guest | 签发游客身份（device_id 绑定，免注册，支撑演示主路径；V1.4 新增） |
 | | POST /auth/login | 验证码登录（邮箱/手机双通道），返回 access+refresh token |
+| | POST /account/merge | 注册后将游客期数据归并到账号（幂等，以 device_id 去重；V1.4 新增） |
 | 素材 | POST /materials | 创建素材，触发异步提炼，返回 material_id |
 | | GET /materials/:id | 轮询提炼结果（refine_json ready 后可开始练习） |
+| | DELETE /materials/:id | 单条素材删除（PRD A4/F4）：级联策略同账号级删除——衍生话术块可选级联删除或锚点脱敏保留，按用户选择 |
 | 会话 | POST /sessions | 创建练习会话，返回 session_id + WSS 接入地址 + 临时票据 |
 | | GET /sessions?page= | 历史列表（工作台） |
 | | GET /sessions/:id/review | 回顾页数据（转录+评价+对照+发音，异步任务完成后就绪） |
 | | POST /sessions/:id/abandon | 放弃练习（B6） |
+| | POST /sessions/:id/messages | 文本降级对话（三级降级末级，PRD 可用性承诺的落地载体；V1.4 新增）：提交用户文本，返回 AI 文本回复；非流式，≤3s；仅网关判定降级后开放，语音可用时返回 409 |
 | 话术块 | GET /corpus/blocks?scene=&func=&kw=&cursor= | 语料库列表 |
 | | PUT /corpus/blocks/:id | 编辑（D2） |
+| | POST /corpus/blocks/:id/favorite | 收藏/取消收藏、置顶/取消置顶（PRD F3；V1.4 新增） |
 | | DELETE /corpus/blocks/:id | 删除 |
 | | POST /corpus/blocks/batch-accept | 全部入库 |
 | 闪测 | GET /drill/round | 取本轮题目（调度引擎取数，返回 ≤10 块） |
@@ -193,7 +208,8 @@ session.end → 投递 session.finished 事件
 
 - 任务幂等：以 `session_id + task_type` 为幂等键，重复消费直接跳过；
 - 失败策略：重试 1 次仍失败 → 会话可回看转录，评价区前端展示"重试"入口（对应 UX 错误态），不重试风暴；
-- 超时 SLA：评价任务 P90 ≤ 15s，超时告警。
+- 超时 SLA：评价任务 P90 ≤ 15s，超时告警；
+- **完成通知的兜底（V1.2）**：APNs 静默推送只做加速——APNs 对 content-available 推送有节流，客户端进入工作台/回顾页时对未就绪的 review 必须主动拉取兜底（见 iOS 文档 §六）。
 
 ### 5.3 闪测调度取数
 
