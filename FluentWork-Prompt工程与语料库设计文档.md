@@ -190,7 +190,7 @@ DrillRecord {
   id, block_id, user_id,
   semantic_pass,        -- 语义判定结果
   pronunciation_score,  -- 发音分（字段预留 V1.1，仅记录，不影响调度）
-  response_ms,          -- 提取耗时（疗效指标原料）
+  response_ms,          -- 提取耗时（疗效指标原料；起点：准备期结束、开始录音，与 UI 文档 4.4 对齐）
   created_at
 }
 ```
