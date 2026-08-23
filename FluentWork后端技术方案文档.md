@@ -1,8 +1,8 @@
 # FluentWork 后端技术方案设计文档
 
-**版本**：V1.0　**日期**：2026年8月　**对应**：PRD V1.2 / 技术方案 V3.0 / Prompt 工程与语料库设计文档 V1.0　**评审角色**：后端技术负责人
+**版本**：V1.1　**日期**：2026年8月　**对应**：PRD V1.3 / 技术方案 V3.1 / Prompt 工程与语料库设计文档 V1.1　**评审角色**：后端技术负责人
 
-> 本文档覆盖服务端全部设计：技术栈、服务架构、数据库、接口契约、核心链路时序、异步任务管线、订阅计费、稳定性与部署。前端与语音链路细节见技术方案 V3.0，Prompt 与调度算法见专项文档，本文只定义服务端如何承载它们。
+> 本文档覆盖服务端全部设计：技术栈、服务架构、数据库、接口契约、核心链路时序、异步任务管线、订阅计费、稳定性与部署。前端与语音链路细节见技术方案 V3.1，Prompt 与调度算法见专项文档，本文只定义服务端如何承载它们。
 
 ---
 
@@ -46,9 +46,9 @@
 │  ├─ corpus    语料库与调度                 │
 │  ├─ content   每日一读/话题卡              │
 │  ├─ drill     闪测                       │
-│  ├─ billing   订阅与内购校验               │
+│  ├─ billing   订阅与内购校验（V1.1 启用，MVP 预留接口与表结构）   │
 │  ├─ notify    推送                       │
-│  └─ ai-worker 异步任务（评价/炼化/评测/生成） │
+│  └─ ai-worker 异步任务（评价/炼化/生成；发音评测 V1.1） │
 └─────────────────────────────────────────┘
    MySQL / Redis / TOS / 火山引擎 AI API
 ```
@@ -80,6 +80,7 @@ practice_sessions(id, user_id, material_id, scene_type, status,
 utterances(id, session_id, seq, speaker, text, asr_confidence,
            audio_url, hit_block_ids JSON, pron_score NULL,
            pron_detail JSON NULL, created_at)
+  -- pron_score / pron_detail 字段预留，随发音评测 V1.1 启用
 
 -- 语料库（详见专项文档，此处列服务端视角补充）
 phrase_blocks(id, user_id, intent_zh, expression_en, anchor_user_said,
@@ -92,6 +93,7 @@ phrase_blocks(id, user_id, intent_zh, expression_en, anchor_user_said,
 drill_records(id, user_id, block_id, drill_type, semantic_pass,
               pronunciation_score, response_ms, created_at)
   KEY idx_block(block_id, created_at), KEY idx_user(user_id, created_at)
+  -- pronunciation_score 字段预留（V1.1），MVP 期恒为 NULL
 
 -- 内容生成
 daily_reads(id, user_id, gen_date, title, body, audio_url,
@@ -101,7 +103,7 @@ topic_cards(id, user_id, topic, scene_desc, block_ids JSON,
             opener_lines JSON, source_refs JSON, checkin_status,
             checkin_score NULL, created_at)
 
--- 订阅
+-- 订阅（表结构随 MVP 建立，商业化能力随 V1.1 上线）
 subscriptions(id, user_id, plan, platform, status,
               expires_at, trial_used, original_tx_id, created_at, updated_at)
 iap_receipts(id, user_id, platform, tx_id UNIQUE, payload, verify_result, created_at)
@@ -131,7 +133,8 @@ ai_cost_logs(id, user_id, task_type, model, tokens_in, tokens_out,
 | 模块 | 方法与路径 | 说明 |
 |---|---|---|
 | 账号 | POST /auth/email-code | 发送邮箱验证码（限流：同邮箱 1/min） |
-| | POST /auth/login | 验证码登录，返回 access+refresh token |
+| | POST /auth/sms-code | 发送手机短信验证码（国内主通道，限流：同号码 1/min；V1.3 新增） |
+| | POST /auth/login | 验证码登录（邮箱/手机双通道），返回 access+refresh token |
 | 素材 | POST /materials | 创建素材，触发异步提炼，返回 material_id |
 | | GET /materials/:id | 轮询提炼结果（refine_json ready 后可开始练习） |
 | 会话 | POST /sessions | 创建练习会话，返回 session_id + WSS 接入地址 + 临时票据 |
@@ -148,8 +151,8 @@ ai_cost_logs(id, user_id, task_type, model, tokens_in, tokens_out,
 | | POST /daily-reads/:id/follow-read | 跟读评分提交 |
 | 话题卡 | GET /topic-cards | 当前有效话题卡 |
 | | POST /topic-cards/:id/checkin | 聊后打卡（H3） |
-| 订阅 | POST /billing/verify | 提交 StoreKit 收据，服务端校验并激活 |
-| | GET /billing/status | 订阅状态与权益 |
+| 订阅（V1.1 启用） | POST /billing/verify | 提交 StoreKit 收据，服务端校验并激活 |
+| | GET /billing/status | 订阅状态与权益；MVP 期恒返回免费权益，接口先行预留 |
 | 隐私 | DELETE /account/data | 一键删除全部数据（异步级联，返回任务 ID 可查进度） |
 
 **会话建立的两次握手**：`POST /sessions` 返回的是 WSS 地址 + 一次性票据（60s 有效），客户端持票据连网关——网关校验票据后才建立语音会话。API Key 与火山凭证全程不出服务端。
@@ -183,9 +186,10 @@ App                voice-gateway            app-server         火山引擎
 ```
 session.end → 投递 session.finished 事件
    ├─► worker: 评价+炼化（合并一次旗舰模型调用，JSON Schema 校验，失败重试 1 次）
-   ├─► worker: 发音评测（逐条用户话轮调评测 API，>60s 截断，写 pron_detail）
    └─► 全部完成 → session.status=reviewed → APNs 静默推送刷新客户端
 ```
+
+（发音评测 worker 随 V1.1 接入，作为第三条并行分支，接口与字段已预留。）
 
 - 任务幂等：以 `session_id + task_type` 为幂等键，重复消费直接跳过；
 - 失败策略：重试 1 次仍失败 → 会话可回看转录，评价区前端展示"重试"入口（对应 UX 错误态），不重试风暴；
@@ -199,8 +203,8 @@ GET /drill/round:
   2. 不足 10 → 补充：近 7 天新入库且未练过的块
   3. 仍不足 → 返回实际数量（前端空态逻辑处理）
 POST /drill/judge:
-  音频 → 火山流式 ASR(短音频接口) → 文本 → 小模型语义判定 + 发音评测并行
-  → 写 drill_record → 更新调度(streak/next_due/state) → 返回 {pass, reason, pron_score}
+  音频 → 火山流式 ASR(短音频接口) → 文本 → 小模型语义判定（发音评测并行分支随 V1.1 接入）
+  → 写 drill_record → 更新调度(streak/next_due/state) → 返回 {pass, reason}
 ```
 
 判定与调度更新在同一事务，避免"判成功但调度没走"的脏状态。
@@ -212,7 +216,9 @@ POST /drill/judge:
 
 ---
 
-## 六、订阅计费服务端
+## 六、订阅计费服务端（V1.1 启用，本章为预先设计）
+
+> **节奏说明**：商业化在 MVP 验证通过后随 V1.1 启动；billing 模块代码随 V1.1 实现，但表结构、接口契约与权益校验点位在 MVP 期预留，避免 V1.1 返工。本章设计在 V1.1 直接执行。
 
 1. **校验流程**：客户端 StoreKit 2 交易 → `POST /billing/verify` 上传签名交易 → 服务端 App Store Server API 验证 → 写 `iap_receipts`（tx_id 唯一，防重放）→ 更新 `subscriptions`；
 2. **状态机**：`trial → active → expired / refunded / revoked`，状态变更以 App Store Server Notifications V2 推送为准（服务端必须接 V2 通知，不能只靠客户端上报，否则退款/续费失败感知不到）；
@@ -227,6 +233,7 @@ POST /drill/judge:
 |---|---|
 | 火山端到端故障 | 网关三级降级：端到端 → 模块化编排 → 纯文本对话（TTS 停用，文字聊天保核心练习不中断）；切换自动+可人工 |
 | 小模型判定超时 | 闪测判定 3s 超时按"待人工"处理（不判错，避免误伤调度） |
+| 发音评测链路故障（V1.1） | 非核心链路，故障不影响转录与评价最小闭环（熔断原则已覆盖） |
 | Redis 故障 | 额度计数降级为放行（宁可多给额度不可阻断付费用户）；调度取数降级直查 MySQL |
 | 突发流量 | API 网关按用户限流；语音会话按账号并发=1 限制（同一时刻只允许一条练习会话） |
 | 数据备份 | MySQL 每日全量 + binlog；TOS 跨区域复制；每月一次恢复演练 |
@@ -247,7 +254,7 @@ POST /drill/judge:
 
 ## 九、测试与发布策略
 
-- **单测重点**：调度引擎（状态迁移全覆盖）、计费状态机、额度校验、级联删除——这四类是"错了就丢数据/丢钱"的模块，覆盖率 ≥ 90%；其余业务接口以集成测试为主；
+- **单测重点**：调度引擎（状态迁移全覆盖）、额度校验、级联删除、计费状态机（V1.1 实施）——这几类是"错了就丢数据/丢钱"的模块，覆盖率 ≥ 90%；其余业务接口以集成测试为主；
 - **契约测试**：网关与单体的内部接口、与客户端的 WSS 协议帧，用 schema 契约测试防静默变更；
 - **灰度发布**：Prompt 变更走配置中心灰度（见专项文档）；服务端发布用按 UID 尾号灰度；
 - **压测**：W8 前完成网关长连接压测（目标单实例 3000 并发连接）与核心接口压测；供应商并发配额压测需与火山商务确认测试窗口，避免触发对方风控。
@@ -260,8 +267,8 @@ POST /drill/judge:
 |---|---|
 | W1-W2 | 骨架工程（CI/日志/埋点/ai_cost_logs）、网关 POC + 火山联调、压测报告 |
 | W3-W4 | account/material/session 模块、WSS 协议全量、管理后台雏形（Prompt 配置） |
-| W5 | ai-worker 管线（评价/炼化/评测/命中检测）、review 接口 |
-| W6 | corpus/drill 模块、每日一读批处理、StoreKit 校验与 V2 通知 |
+| W5 | ai-worker 管线（评价/炼化/命中检测；发音评测分支 V1.1）、review 接口 |
+| W6 | corpus/drill 模块、每日一读批处理（StoreKit 校验与 V2 通知随 V1.1 实施，接口预留） |
 | W7 | 调度引擎、话题卡批处理、APNs、限流与降级开关 |
 | W8 | 压测、oncall 手册、TestFlight 内测支持 |
 
