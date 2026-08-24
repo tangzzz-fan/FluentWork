@@ -7,7 +7,7 @@
 
 **组织现状更新**：GitHub 组织已创建：`https://github.com/FluentWork`
 
-**仓库现状更新**：以下 4 个私有仓已创建并初始化（默认分支 `main`，已带 README）：
+**仓库现状更新**：以下 4 个公开仓已创建并初始化（默认分支 `main`，README 已按仓库职责补齐并推送）：
 
 - `https://github.com/FluentWork/fluentwork-meta`
 - `https://github.com/FluentWork/fluentwork-ios`

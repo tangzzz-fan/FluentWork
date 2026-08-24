@@ -13,6 +13,11 @@ GitHub 组织已建立：
 - `https://github.com/FluentWork/fluentwork-backend`
 - `https://github.com/FluentWork/fluentwork-infra`
 
+当前仓库可见性：
+
+- 以上 4 个仓库均已切换为 `public`
+- 每个仓库的 `README.md` 已完成首次初始化并推送到 `main`
+
 当前本地仓库 remote 仍指向：
 
 - `git@github.com:tangzzz-fan/FluentWork.git`
