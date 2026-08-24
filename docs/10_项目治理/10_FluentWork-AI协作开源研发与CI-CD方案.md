@@ -5,6 +5,15 @@
 **定位**：给 FluentWork 从“文档规划期”进入“AI 工具 + GitHub + 多仓库 + CI/CD 驱动开发期”的执行方案  
 **上游依据**：`FluentWork项目启动书`、`FluentWork团队分工文档`、`FluentWork技术方案设计文档`、`FluentWork后端技术方案文档`
 
+**组织现状更新**：GitHub 组织已创建：`https://github.com/FluentWork`
+
+**仓库现状更新**：以下 4 个私有仓已创建并初始化（默认分支 `main`，已带 README）：
+
+- `https://github.com/FluentWork/fluentwork-meta`
+- `https://github.com/FluentWork/fluentwork-ios`
+- `https://github.com/FluentWork/fluentwork-backend`
+- `https://github.com/FluentWork/fluentwork-infra`
+
 ---
 
 ## 一、目标与结论
@@ -38,6 +47,8 @@
 ## 二、先回答核心问题：建立几个仓库
 
 ### 2.1 推荐方案：4 仓库
+
+当前实际落地已采用该方案。
 
 #### 仓库 1：`fluentwork-meta`
 
@@ -170,7 +181,8 @@
 
 ## 四、推荐的 GitHub 组织结构
 
-推荐在 GitHub 上建立组织，而不是个人账号下散放仓库。
+GitHub 组织已建立：`https://github.com/FluentWork`。  
+当前重点不再是“是否建组织”，而是把仓库、权限、模板和自动化骨架补齐。
 
 ### 4.1 组织层配置
 
@@ -466,11 +478,11 @@ CD：
 
 当前最先做的不是业务代码，而是：
 
-1. 建 GitHub organization
-2. 建 4 仓库
-3. 建模板、分支保护、Actions 骨架
-4. 将当前文档同步到 `fluentwork-meta`
-5. 把里程碑拆成 Issues
+1. 配置 team、模板、分支保护、Actions 骨架
+2. 将当前文档同步到 `fluentwork-meta`
+3. 把里程碑拆成 Issues
+4. 初始化 `fluentwork-ios` 与 `fluentwork-backend` 代码骨架
+5. 再启动核心链路开发
 
 原因：
 
@@ -656,10 +668,10 @@ CD：
 按顺序：
 
 1. 建 `docs` 目录与本轮治理文档
-2. 建 GitHub organization
-3. 建 4 仓库
-4. 先把当前文档迁入 `fluentwork-meta`
-5. 建 issue 模板、PR 模板、CODEOWNERS、Actions skeleton
+2. 先把当前文档迁入 `fluentwork-meta`
+3. 建 issue 模板、PR 模板、CODEOWNERS、Actions skeleton
+4. 配置 team、branch protection、Projects
+5. 初始化 `fluentwork-ios`、`fluentwork-backend`、`fluentwork-infra`
 6. 再开始 iOS 与 backend 骨架编码
 
 这一顺序不能反。
